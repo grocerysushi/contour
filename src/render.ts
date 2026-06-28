@@ -67,7 +67,9 @@ export function buildLayerPaths(fd: FieldData, levels: Float32Array, W: number, 
       if (bl > cellMax) cellMax = bl
       if (br > cellMax) cellMax = br
 
-      for (let i = 0; i < N; i++) {
+      // Skip layer 0: its region is the whole canvas, already painted by the
+      // base rect in paintScene. Building/filling it is pure waste.
+      for (let i = 1; i < N; i++) {
         const level = levels[i]
         // Outside for this and every higher threshold.
         if (level > cellMax) break
@@ -134,7 +136,8 @@ export function buildEdgePath(fd: FieldData, levels: Float32Array, W: number, H:
       let cellMin = Math.min(tl, tr, bl, br)
       let cellMax = Math.max(tl, tr, bl, br)
 
-      for (let i = 0; i < N; i++) {
+      // Layer 0 never produces a line (its region is the whole canvas).
+      for (let i = 1; i < N; i++) {
         const level = levels[i]
         if (level <= cellMin || level > cellMax) continue
         const code = (tl >= level ? 8 : 0) | (tr >= level ? 4 : 0) | (br >= level ? 2 : 0) | (bl >= level ? 1 : 0)
@@ -198,7 +201,8 @@ export function paintScene(
   ctx.fillStyle = rampColor(stops, 0)
   ctx.fillRect(0, 0, W, H)
 
-  for (let i = 0; i < N; i++) {
+  // Layer 0 is the base rect above; paths[0] is empty. Start at 1.
+  for (let i = 1; i < N; i++) {
     const color = rampColor(stops, N > 1 ? i / (N - 1) : 0)
 
     // Body + groove: a single fill so the drop shadow rides only the silhouette.

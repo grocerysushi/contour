@@ -49,33 +49,48 @@ export default function App() {
   const rafId = useRef<number>(0)
   const scaleDebounce = useRef<number>(0)
   const thumbDebounce = useRef<number>(0)
+  // Cached layer/edge geometry; only rebuilt when structure changes. The edge
+  // path is built lazily — skipped entirely while Edge is 0.
+  const pathCache = useRef<{
+    key: string
+    px: number
+    fd: FieldData
+    levels: Float32Array
+    paths: Path2D[]
+    edgePath: Path2D | null
+  } | null>(null)
+  const thumbPathCache = useRef<Map<string, Path2D[]>>(new Map())
   const [sizeTick, setSizeTick] = useState(0)
 
   const customRamp = useMemo(() => generateRamp(gen), [gen])
   const stops = inkMode === 'custom' ? customRamp : PALETTES[palette].stops
   const inkName = inkMode === 'custom' ? 'Custom' : PALETTES[palette].name
 
-  const getField = useCallback(
-    (plateIdx: number, G: number): FieldData => {
-      const key = fieldKey(plateIdx, seed, scale, G)
-      const cache = fieldCache.current
-      let fd = cache.get(key)
-      if (!fd) {
-        const sampler = PLATES[plateIdx].build(seed, scale)
-        fd = sampleField(sampler, G)
-        if (cache.size > 64) cache.clear()
-        cache.set(key, fd)
-      }
-      return fd
-    },
-    [seed, scale],
-  )
+  // Latest render inputs, read by the stable render callbacks below. Keeping
+  // the callbacks identity-stable means scheduling is driven explicitly by the
+  // effects (immediate vs debounced) rather than by closure churn.
+  const params = useRef({ plate, seed, scale, layers, depth, edge, stops })
+  params.current = { plate, seed, scale, layers, depth, edge, stops }
 
-  // --- Main canvas render -------------------------------------------------
+  const getField = useCallback((plateIdx: number, seed: number, scale: number, G: number): FieldData => {
+    const key = fieldKey(plateIdx, seed, scale, G)
+    const cache = fieldCache.current
+    let fd = cache.get(key)
+    if (!fd) {
+      const sampler = PLATES[plateIdx].build(seed, scale)
+      fd = sampleField(sampler, G)
+      if (cache.size > 64) cache.clear()
+      cache.set(key, fd)
+    }
+    return fd
+  }, [])
+
+  // --- Main canvas render (stable) ---------------------------------------
   const renderMain = useCallback(() => {
     const canvas = mainRef.current
     const bed = bedRef.current
     if (!canvas || !bed) return
+    const { plate, seed, scale, layers, depth, edge, stops } = params.current
     const cssSize = Math.max(160, Math.floor(bed.clientWidth))
     const px = Math.round(cssSize * DPR)
     if (canvas.width !== px) {
@@ -87,20 +102,48 @@ export default function App() {
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
-    const fd = getField(plate, MAIN_G)
-    const levels = levelsFor(fd, layers)
-    const paths = buildLayerPaths(fd, levels, px, px)
-    const edgePath = edge > 0 ? buildEdgePath(fd, levels, px, px) : null
-    paintScene(ctx, paths, edgePath, { W: px, H: px, dpr: DPR, stops, depth, edge })
-  }, [getField, plate, layers, edge, stops, depth])
+    // Geometry depends only on plate/seed/scale/layers/size — not on ink,
+    // depth, or edge. Rebuild only when one of those changes; recolor / depth
+    // / edge tweaks just repaint the cached paths.
+    const structKey = `${plate}|${seed}|${scale.toFixed(3)}|${layers}|${px}`
+    let cached = pathCache.current
+    if (!cached || cached.key !== structKey) {
+      const fd = getField(plate, seed, scale, MAIN_G)
+      const levels = levelsFor(fd, layers)
+      cached = {
+        key: structKey,
+        px,
+        fd,
+        levels,
+        paths: buildLayerPaths(fd, levels, px, px),
+        edgePath: null,
+      }
+      pathCache.current = cached
+    }
+    // Build the edge geometry only when the knife cut is actually on.
+    let edgePath: Path2D | null = null
+    if (edge > 0) {
+      if (!cached.edgePath) cached.edgePath = buildEdgePath(cached.fd, cached.levels, cached.px, cached.px)
+      edgePath = cached.edgePath
+    }
+    paintScene(ctx, cached.paths, edgePath, {
+      W: px,
+      H: px,
+      dpr: DPR,
+      stops,
+      depth,
+      edge,
+    })
+  }, [getField])
 
   const scheduleMain = useCallback(() => {
     cancelAnimationFrame(rafId.current)
     rafId.current = requestAnimationFrame(renderMain)
   }, [renderMain])
 
-  // --- Thumbnails ---------------------------------------------------------
+  // --- Thumbnails (stable) -----------------------------------------------
   const renderThumbs = useCallback(() => {
+    const { seed, scale, layers, stops } = params.current
     for (let i = 0; i < PLATES.length; i++) {
       const canvas = document.getElementById(`thumb-${i}`) as HTMLCanvasElement | null
       if (!canvas) continue
@@ -113,37 +156,43 @@ export default function App() {
         }
         const ctx = canvas.getContext('2d')
         if (!ctx) continue
-        const fd = getField(i, THUMB_G)
-        const levels = levelsFor(fd, layers)
-        const paths = buildLayerPaths(fd, levels, px, px)
-        paintScene(ctx, paths, null, {
-          W: px,
-          H: px,
-          dpr: DPR,
-          stops,
-          depth: depth * 0.7,
-          edge: 0,
-        })
+        const key = `${i}|${seed}|${scale.toFixed(3)}|${layers}|${px}`
+        const cache = thumbPathCache.current
+        let paths = cache.get(key)
+        if (!paths) {
+          const fd = getField(i, seed, scale, THUMB_G)
+          const levels = levelsFor(fd, layers)
+          paths = buildLayerPaths(fd, levels, px, px)
+          if (cache.size > 32) cache.clear()
+          cache.set(key, paths)
+        }
+        // Fixed depth so the depth slider never re-renders thumbnails.
+        paintScene(ctx, paths, null, { W: px, H: px, dpr: DPR, stops, depth: 0.6, edge: 0 })
       } catch {
         // Never let a thumbnail break the main canvas.
       }
     }
-  }, [getField, layers, stops, depth])
+  }, [getField])
 
-  // Render main immediately on relevant change; debounce thumbnails after.
+  // Immediate repaint on visual changes that are cheap (paths cached) — but
+  // NOT scale, which resamples the field and is debounced separately.
   useEffect(() => {
     scheduleMain()
-    window.clearTimeout(thumbDebounce.current)
-    thumbDebounce.current = window.setTimeout(renderThumbs, 130)
-    return () => window.clearTimeout(thumbDebounce.current)
-  }, [scheduleMain, renderThumbs, sizeTick])
+  }, [scheduleMain, plate, seed, layers, depth, edge, stops, sizeTick])
 
-  // Resample is heavier on scale change — debounce it lightly.
+  // Scale resamples the whole field; coalesce rapid drags before rendering.
   useEffect(() => {
     window.clearTimeout(scaleDebounce.current)
-    scaleDebounce.current = window.setTimeout(scheduleMain, 50)
+    scaleDebounce.current = window.setTimeout(scheduleMain, 60)
     return () => window.clearTimeout(scaleDebounce.current)
   }, [scale, scheduleMain])
+
+  // Thumbnails react only to structure/ink (not depth/edge), debounced.
+  useEffect(() => {
+    window.clearTimeout(thumbDebounce.current)
+    thumbDebounce.current = window.setTimeout(renderThumbs, 140)
+    return () => window.clearTimeout(thumbDebounce.current)
+  }, [renderThumbs, seed, scale, layers, stops, sizeTick])
 
   // Repaint on container resize.
   useEffect(() => {
