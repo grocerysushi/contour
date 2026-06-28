@@ -14,7 +14,14 @@ import {
 
 const MAIN_G = 140
 const THUMB_G = 46
-const DPR = Math.min(typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1, 2)
+// Read the live device-pixel ratio at render time (zoom / monitor moves
+// change it) and render the canvas backing store at that resolution so it
+// stays crisp. Capped at 3 to bound paint cost on extreme displays.
+const MAX_DPR = 3
+function getDpr(): number {
+  const d = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1
+  return Math.min(Math.max(d, 1), MAX_DPR)
+}
 
 // Instagram destination. Change the handle here to repoint the share button.
 const IG_HANDLE = 'grocerysushi'
@@ -103,8 +110,9 @@ export default function App() {
     const bed = bedRef.current
     if (!canvas || !bed) return
     const { plate, seed, scale, layers, depth, edge, stops } = params.current
+    const dpr = getDpr()
     const cssSize = Math.max(160, Math.floor(bed.clientWidth))
-    const px = Math.round(cssSize * DPR)
+    const px = Math.round(cssSize * dpr)
     if (canvas.width !== px) {
       canvas.width = px
       canvas.height = px
@@ -141,7 +149,7 @@ export default function App() {
     paintScene(ctx, cached.paths, edgePath, {
       W: px,
       H: px,
-      dpr: DPR,
+      dpr,
       stops,
       depth,
       edge,
@@ -156,12 +164,14 @@ export default function App() {
   // --- Thumbnails (stable) -----------------------------------------------
   const renderThumbs = useCallback(() => {
     const { seed, scale, layers, stops } = params.current
+    const dpr = getDpr()
     for (let i = 0; i < PLATES.length; i++) {
       const canvas = document.getElementById(`thumb-${i}`) as HTMLCanvasElement | null
       if (!canvas) continue
       try {
-        const cssSize = 132
-        const px = Math.round(cssSize * DPR)
+        // Match the chip's actual rendered width so the thumbnail isn't upscaled.
+        const cssSize = Math.max(96, Math.round(canvas.getBoundingClientRect().width) || 132)
+        const px = Math.round(cssSize * dpr)
         if (canvas.width !== px) {
           canvas.width = px
           canvas.height = px
@@ -179,7 +189,7 @@ export default function App() {
           cache.set(key, paths)
         }
         // Fixed depth so the depth slider never re-renders thumbnails.
-        paintScene(ctx, paths, null, { W: px, H: px, dpr: DPR, stops, depth: 0.6, edge: 0 })
+        paintScene(ctx, paths, null, { W: px, H: px, dpr, stops, depth: 0.6, edge: 0 })
       } catch {
         // Never let a thumbnail break the main canvas.
       }
@@ -213,6 +223,34 @@ export default function App() {
     const ro = new ResizeObserver(() => setSizeTick((t) => t + 1))
     ro.observe(bed)
     return () => ro.disconnect()
+  }, [])
+
+  // Re-render when the device-pixel ratio changes (browser zoom, or dragging
+  // the window to a monitor with different density) so the canvas stays sharp.
+  // Also repaint when the tab becomes visible: a first paint scheduled via rAF
+  // is skipped while the tab is in the background, leaving a stretched canvas.
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return
+    let mql: MediaQueryList | null = null
+    const bump = () => setSizeTick((t) => t + 1)
+    const onChange = () => {
+      bump()
+      arm()
+    }
+    const arm = () => {
+      mql?.removeEventListener('change', onChange)
+      mql = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`)
+      mql.addEventListener('change', onChange)
+    }
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') bump()
+    }
+    arm()
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      mql?.removeEventListener('change', onChange)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [])
 
   // --- GSAP: respect reduced motion, then choreograph the intro ----------
