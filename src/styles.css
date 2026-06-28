@@ -496,6 +496,14 @@ input[type='range']::-moz-range-thumb {
 .ig-glyph {
   flex: none;
 }
+.ig-label {
+  white-space: nowrap;
+}
+.ig-handle {
+  text-transform: none;
+  letter-spacing: 0.02em;
+  font-weight: 700;
+}
 .howto {
   margin: 14px 0 0;
   min-height: 2.6em;

@@ -16,6 +16,10 @@ const MAIN_G = 140
 const THUMB_G = 46
 const DPR = Math.min(typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1, 2)
 
+// Instagram destination. Change the handle here to repoint the share button.
+const IG_HANDLE = 'grocerysushi'
+const IG_PROFILE_URL = `https://www.instagram.com/${IG_HANDLE}/`
+
 function slug(name: string): string {
   return name.toLowerCase().split(/\s+/)[0]
 }
@@ -306,10 +310,10 @@ export default function App() {
 
   const savePng = useCallback(() => withBlob(downloadBlob), [withBlob, downloadBlob])
 
-  // Post to Instagram. On mobile the Web Share API hands the PNG to the native
-  // share sheet (Instagram, Stories, etc.). Desktop browsers can't push an
-  // image into Instagram directly, so fall back to saving it and opening the
-  // composer with a prompt.
+  // Post to @grocerysushi. On mobile the Web Share API hands the PNG to the
+  // native share sheet (Instagram, Stories, etc.). Desktop browsers can't push
+  // an image into Instagram directly, so fall back to saving the PNG and
+  // opening the profile, where a new post can be started.
   const shareImage = useCallback(() => {
     withBlob(async (blob, name) => {
       const file = new File([blob], name, { type: 'image/png' })
@@ -322,7 +326,7 @@ export default function App() {
           await nav.share({
             files: [file],
             title: 'Contour Press',
-            text: 'Printed with Contour Press',
+            text: `Printed with Contour Press — @${IG_HANDLE}`,
           })
           flash('Shared. Pick Instagram from the share sheet.')
         } catch {
@@ -330,8 +334,8 @@ export default function App() {
         }
       } else {
         downloadBlob(blob, name)
-        window.open('https://www.instagram.com/', '_blank', 'noopener')
-        flash('Saved the PNG — drop it into a new Instagram post.')
+        window.open(IG_PROFILE_URL, '_blank', 'noopener')
+        flash(`Saved the PNG — opening @${IG_HANDLE} to start a new post.`)
       }
     })
   }, [withBlob, downloadBlob, flash])
@@ -504,9 +508,17 @@ export default function App() {
               <button type="button" className="btn" onClick={savePng}>
                 Save PNG
               </button>
-              <button type="button" className="btn primary ig" onClick={shareImage}>
+              <button
+                type="button"
+                className="btn primary ig"
+                onClick={shareImage}
+                title={`Share to Instagram (@${IG_HANDLE})`}
+                aria-label={`Post to Instagram, @${IG_HANDLE}`}
+              >
                 <IgGlyph />
-                Post to Instagram
+                <span className="ig-label">
+                  Post to <span className="ig-handle">@{IG_HANDLE}</span>
+                </span>
               </button>
             </div>
             <p className="howto" role="status" aria-live="polite">
