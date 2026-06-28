@@ -23,10 +23,6 @@ function getDpr(): number {
   return Math.min(Math.max(d, 1), MAX_DPR)
 }
 
-// Instagram destination. Change the handle here to repoint the share button.
-const IG_HANDLE = 'grocerysushi'
-const IG_PROFILE_URL = `https://www.instagram.com/${IG_HANDLE}/`
-
 function slug(name: string): string {
   return name.toLowerCase().split(/\s+/)[0]
 }
@@ -54,14 +50,12 @@ export default function App() {
   const [scale, setScale] = useState(1)
   const [edge, setEdge] = useState(0.5)
   const [seed, setSeed] = useState(() => randomSeed())
-  const [toast, setToast] = useState<string | null>(null)
 
   const appRef = useRef<HTMLDivElement>(null)
   const capNumRef = useRef<HTMLSpanElement>(null)
   const customSwatchRef = useRef<HTMLButtonElement>(null)
   const reduceMotion = useRef(false)
   const firstStamp = useRef(true)
-  const toastTimer = useRef<number>(0)
   const mainRef = useRef<HTMLCanvasElement>(null)
   const bedRef = useRef<HTMLDivElement>(null)
   const fieldCache = useRef<Map<string, FieldData>>(new Map())
@@ -293,12 +287,6 @@ export default function App() {
     }
   }, [plate, seed])
 
-  const flash = useCallback((msg: string) => {
-    setToast(msg)
-    window.clearTimeout(toastTimer.current)
-    toastTimer.current = window.setTimeout(() => setToast(null), 3600)
-  }, [])
-
   const reroll = useCallback(() => setSeed(randomSeed()), [])
 
   // Generate a fresh random ink ramp and switch to it, with a little pulse.
@@ -320,63 +308,20 @@ export default function App() {
     setInkMode('custom')
   }, [])
 
-  const exportName = useCallback(
-    () => `contour-${slug(PLATES[plate].name)}-${seedHex(seed)}.png`,
-    [plate, seed],
-  )
-
-  const withBlob = useCallback(
-    (cb: (blob: Blob, name: string) => void) => {
-      const canvas = mainRef.current
-      if (!canvas) return
-      const name = exportName()
-      canvas.toBlob((blob) => {
-        if (blob) cb(blob, name)
-      }, 'image/png')
-    },
-    [exportName],
-  )
-
-  const downloadBlob = useCallback((blob: Blob, name: string) => {
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = name
-    a.click()
-    setTimeout(() => URL.revokeObjectURL(url), 1000)
-  }, [])
-
-  const savePng = useCallback(() => withBlob(downloadBlob), [withBlob, downloadBlob])
-
-  // Post to @grocerysushi. On mobile the Web Share API hands the PNG to the
-  // native share sheet (Instagram, Stories, etc.). Desktop browsers can't push
-  // an image into Instagram directly, so fall back to saving the PNG and
-  // opening the profile, where a new post can be started.
-  const shareImage = useCallback(() => {
-    withBlob(async (blob, name) => {
-      const file = new File([blob], name, { type: 'image/png' })
-      const nav = navigator as Navigator & {
-        canShare?: (data?: ShareData) => boolean
-        share?: (data?: ShareData) => Promise<void>
-      }
-      if (nav.canShare && nav.share && nav.canShare({ files: [file] })) {
-        try {
-          await nav.share({
-            files: [file],
-            title: 'Contour Press',
-            text: `Printed with Contour Press — @${IG_HANDLE}`,
-          })
-          flash('Shared. Pick Instagram from the share sheet.')
-        } catch {
-          // User dismissed the share sheet — nothing to do.
-        }
-      } else {
-        downloadBlob(blob, name)
-        window.open(IG_PROFILE_URL, '_blank', 'noopener')
-        flash(`Saved the PNG — opening @${IG_HANDLE} to start a new post.`)
-      }
-    })
-  }, [withBlob, downloadBlob, flash])
+  const savePng = useCallback(() => {
+    const canvas = mainRef.current
+    if (!canvas) return
+    const name = `contour-${slug(PLATES[plate].name)}-${seedHex(seed)}.png`
+    canvas.toBlob((blob) => {
+      if (!blob) return
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = name
+      a.click()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+    }, 'image/png')
+  }, [plate, seed])
 
   const activePlate = PLATES[plate]
 
@@ -541,31 +486,12 @@ export default function App() {
               <button type="button" className="btn" onClick={reroll}>
                 Reroll
               </button>
-            </div>
-            <div className="actions">
-              <button type="button" className="btn" onClick={savePng}>
+              <button type="button" className="btn primary" onClick={savePng}>
                 Save PNG
               </button>
-              <button
-                type="button"
-                className="btn primary ig"
-                onClick={shareImage}
-                title={`Share to Instagram (@${IG_HANDLE})`}
-                aria-label={`Post to Instagram, @${IG_HANDLE}`}
-              >
-                <IgGlyph />
-                <span className="ig-label">
-                  Post to <span className="ig-handle">@{IG_HANDLE}</span>
-                </span>
-              </button>
             </div>
-            <p className="howto" role="status" aria-live="polite">
-              {toast ?? (
-                <>
-                  {activePlate.blurb} Sheets stack low→high; depth carves the grooves, edge lays the knife
-                  cut.
-                </>
-              )}
+            <p className="howto">
+              {activePlate.blurb} Sheets stack low→high; depth carves the grooves, edge lays the knife cut.
             </p>
           </fieldset>
         </aside>
@@ -605,16 +531,6 @@ function Slider(props: {
         style={{ ['--pct' as string]: pct + '%' }}
       />
     </div>
-  )
-}
-
-function IgGlyph() {
-  return (
-    <svg className="ig-glyph" viewBox="0 0 24 24" width="14" height="14" aria-hidden focusable="false">
-      <rect x="2.5" y="2.5" width="19" height="19" rx="5.5" fill="none" stroke="currentColor" strokeWidth="2" />
-      <circle cx="12" cy="12" r="4.6" fill="none" stroke="currentColor" strokeWidth="2" />
-      <circle cx="17.6" cy="6.4" r="1.4" fill="currentColor" />
-    </svg>
   )
 }
 
