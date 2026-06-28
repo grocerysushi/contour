@@ -332,6 +332,38 @@ body {
   color: var(--bone);
 }
 
+/* Ink generator */
+.gen {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--line);
+}
+.gen-head {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+.gen-head .swatch.custom {
+  flex: 1;
+}
+.gen-btn {
+  margin: 0;
+  align-self: stretch;
+  white-space: nowrap;
+}
+.hue-track {
+  background: linear-gradient(
+    90deg,
+    hsl(0, 70%, 55%),
+    hsl(60, 70%, 55%),
+    hsl(120, 70%, 55%),
+    hsl(180, 70%, 55%),
+    hsl(240, 70%, 55%),
+    hsl(300, 70%, 55%),
+    hsl(360, 70%, 55%)
+  ) !important;
+}
+
 /* Sliders */
 .slider {
   margin-top: 12px;

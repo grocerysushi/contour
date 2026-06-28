@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { PLATES } from './fields'
 import { PALETTES } from './palettes'
+import { generateRamp, randomRampOpts, type RampOpts } from './generate'
 import {
   buildEdgePath,
   buildLayerPaths,
@@ -34,6 +35,8 @@ function fieldKey(plate: number, seed: number, scale: number, G: number): string
 export default function App() {
   const [plate, setPlate] = useState(1)
   const [palette, setPalette] = useState(0)
+  const [inkMode, setInkMode] = useState<'preset' | 'custom'>('preset')
+  const [gen, setGen] = useState<RampOpts>(() => randomRampOpts(Math.random))
   const [layers, setLayers] = useState(16)
   const [depth, setDepth] = useState(1)
   const [scale, setScale] = useState(1)
@@ -48,7 +51,9 @@ export default function App() {
   const thumbDebounce = useRef<number>(0)
   const [sizeTick, setSizeTick] = useState(0)
 
-  const stops = PALETTES[palette].stops
+  const customRamp = useMemo(() => generateRamp(gen), [gen])
+  const stops = inkMode === 'custom' ? customRamp : PALETTES[palette].stops
+  const inkName = inkMode === 'custom' ? 'Custom' : PALETTES[palette].name
 
   const getField = useCallback(
     (plateIdx: number, G: number): FieldData => {
@@ -151,6 +156,18 @@ export default function App() {
 
   const reroll = useCallback(() => setSeed(randomSeed()), [])
 
+  // Generate a fresh random ink ramp and switch to it.
+  const rollInk = useCallback(() => {
+    setGen(randomRampOpts(Math.random))
+    setInkMode('custom')
+  }, [])
+
+  // Edit one generator parameter; editing always activates the custom ramp.
+  const editInk = useCallback((patch: Partial<RampOpts>) => {
+    setGen((g) => ({ ...g, ...patch }))
+    setInkMode('custom')
+  }, [])
+
   const savePng = useCallback(() => {
     const canvas = mainRef.current
     if (!canvas) return
@@ -203,7 +220,7 @@ export default function App() {
           <div className="caption">
             <span className="cap-num">{String(plate + 1).padStart(2, '0')}</span>
             <span className="cap-name">{activePlate.name}</span>
-            <span className="cap-ink">ink · {PALETTES[palette].name}</span>
+            <span className="cap-ink">ink · {inkName}</span>
           </div>
         </section>
 
@@ -234,23 +251,79 @@ export default function App() {
           <fieldset className="block">
             <legend>Ink set</legend>
             <div className="swatches">
-              {PALETTES.map((pal, i) => (
+              {PALETTES.map((pal, i) => {
+                const on = inkMode === 'preset' && i === palette
+                return (
+                  <button
+                    key={pal.name}
+                    type="button"
+                    aria-pressed={on}
+                    className={'swatch' + (on ? ' active' : '')}
+                    onClick={() => {
+                      setPalette(i)
+                      setInkMode('preset')
+                    }}
+                    title={pal.name}
+                  >
+                    <span className="ramp">
+                      {pal.stops.map((c, k) => (
+                        <span key={k} style={{ background: c }} />
+                      ))}
+                    </span>
+                    <span className="swatch-name">{pal.name}</span>
+                  </button>
+                )
+              })}
+            </div>
+
+            <div className="gen">
+              <div className="gen-head">
                 <button
-                  key={pal.name}
                   type="button"
-                  aria-pressed={i === palette}
-                  className={'swatch' + (i === palette ? ' active' : '')}
-                  onClick={() => setPalette(i)}
-                  title={pal.name}
+                  aria-pressed={inkMode === 'custom'}
+                  className={'swatch custom' + (inkMode === 'custom' ? ' active' : '')}
+                  onClick={() => setInkMode('custom')}
+                  title="Use the generated ink ramp"
                 >
                   <span className="ramp">
-                    {pal.stops.map((c, k) => (
+                    {customRamp.map((c, k) => (
                       <span key={k} style={{ background: c }} />
                     ))}
                   </span>
-                  <span className="swatch-name">{pal.name}</span>
+                  <span className="swatch-name">Custom</span>
                 </button>
-              ))}
+                <button type="button" className="btn gen-btn" onClick={rollInk}>
+                  ⟳ Generate
+                </button>
+              </div>
+              <Slider
+                label="Hue"
+                value={gen.hue}
+                min={0}
+                max={360}
+                step={1}
+                onChange={(v) => editInk({ hue: v })}
+                fmt={(v) => Math.round(v) + '°'}
+                track="hue"
+              />
+              <Slider
+                label="Spread"
+                value={gen.spread}
+                min={-160}
+                max={160}
+                step={1}
+                onChange={(v) => editInk({ spread: v })}
+                fmt={(v) => Math.round(v) + '°'}
+              />
+              <Slider
+                label="Warmth"
+                value={gen.warm}
+                min={0}
+                max={1}
+                step={0.01}
+                onChange={(v) => editInk({ warm: v })}
+                fmt={(v) => Math.round(v * 100) + '%'}
+              />
             </div>
           </fieldset>
 
@@ -290,8 +363,9 @@ function Slider(props: {
   step: number
   onChange: (v: number) => void
   fmt: (v: number) => string
+  track?: 'hue'
 }) {
-  const { label, value, min, max, step, onChange, fmt } = props
+  const { label, value, min, max, step, onChange, fmt, track } = props
   const id = useMemo(() => 'sl-' + label.toLowerCase(), [label])
   const pct = ((value - min) / (max - min)) * 100
   return (
@@ -303,6 +377,7 @@ function Slider(props: {
       <input
         id={id}
         type="range"
+        className={track === 'hue' ? 'hue-track' : undefined}
         min={min}
         max={max}
         step={step}
