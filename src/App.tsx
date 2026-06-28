@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import gsap from 'gsap'
 import { PLATES } from './fields'
 import { PALETTES } from './palettes'
 import { generateRamp, randomRampOpts, type RampOpts } from './generate'
@@ -42,7 +43,14 @@ export default function App() {
   const [scale, setScale] = useState(1)
   const [edge, setEdge] = useState(0.5)
   const [seed, setSeed] = useState(() => randomSeed())
+  const [toast, setToast] = useState<string | null>(null)
 
+  const appRef = useRef<HTMLDivElement>(null)
+  const capNumRef = useRef<HTMLSpanElement>(null)
+  const customSwatchRef = useRef<HTMLButtonElement>(null)
+  const reduceMotion = useRef(false)
+  const firstStamp = useRef(true)
+  const toastTimer = useRef<number>(0)
   const mainRef = useRef<HTMLCanvasElement>(null)
   const bedRef = useRef<HTMLDivElement>(null)
   const fieldCache = useRef<Map<string, FieldData>>(new Map())
@@ -203,12 +211,65 @@ export default function App() {
     return () => ro.disconnect()
   }, [])
 
+  // --- GSAP: respect reduced motion, then choreograph the intro ----------
+  useLayoutEffect(() => {
+    reduceMotion.current =
+      typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    if (reduceMotion.current) return
+    const root = appRef.current
+    if (!root) return
+    const ctx = gsap.context(() => {
+      const tl = gsap.timeline({ defaults: { ease: 'power3.out' } })
+      tl.from('.topbar', { opacity: 0, y: -12, duration: 0.5 })
+        .from('.bed', { opacity: 0, y: 18, duration: 0.6 }, '-=0.3')
+        .from('.caption', { opacity: 0, duration: 0.4 }, '-=0.2')
+        .from('.controls > .block', { opacity: 0, y: 18, duration: 0.5, stagger: 0.08 }, '-=0.45')
+    }, root)
+    return () => ctx.revert()
+  }, [])
+
+  // Thematic "press stamp" when the printed plate changes (plate or seed).
+  useEffect(() => {
+    if (firstStamp.current) {
+      firstStamp.current = false
+      return
+    }
+    if (reduceMotion.current) return
+    if (bedRef.current) {
+      gsap.fromTo(
+        bedRef.current,
+        { scale: 0.975 },
+        { scale: 1, duration: 0.5, ease: 'power3.out', clearProps: 'scale' },
+      )
+    }
+    if (capNumRef.current) {
+      gsap.fromTo(
+        capNumRef.current,
+        { y: -10, opacity: 0 },
+        { y: 0, opacity: 1, duration: 0.4, ease: 'back.out(2)' },
+      )
+    }
+  }, [plate, seed])
+
+  const flash = useCallback((msg: string) => {
+    setToast(msg)
+    window.clearTimeout(toastTimer.current)
+    toastTimer.current = window.setTimeout(() => setToast(null), 3600)
+  }, [])
+
   const reroll = useCallback(() => setSeed(randomSeed()), [])
 
-  // Generate a fresh random ink ramp and switch to it.
+  // Generate a fresh random ink ramp and switch to it, with a little pulse.
   const rollInk = useCallback(() => {
     setGen(randomRampOpts(Math.random))
     setInkMode('custom')
+    if (!reduceMotion.current && customSwatchRef.current) {
+      gsap.fromTo(
+        customSwatchRef.current,
+        { scale: 0.92 },
+        { scale: 1, duration: 0.5, ease: 'elastic.out(1, 0.5)', clearProps: 'scale' },
+      )
+    }
   }, [])
 
   // Edit one generator parameter; editing always activates the custom ramp.
@@ -217,25 +278,68 @@ export default function App() {
     setInkMode('custom')
   }, [])
 
-  const savePng = useCallback(() => {
-    const canvas = mainRef.current
-    if (!canvas) return
-    const name = `contour-${slug(PLATES[plate].name)}-${seedHex(seed)}.png`
-    canvas.toBlob((blob) => {
-      if (!blob) return
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = name
-      a.click()
-      setTimeout(() => URL.revokeObjectURL(url), 1000)
-    }, 'image/png')
-  }, [plate, seed])
+  const exportName = useCallback(
+    () => `contour-${slug(PLATES[plate].name)}-${seedHex(seed)}.png`,
+    [plate, seed],
+  )
+
+  const withBlob = useCallback(
+    (cb: (blob: Blob, name: string) => void) => {
+      const canvas = mainRef.current
+      if (!canvas) return
+      const name = exportName()
+      canvas.toBlob((blob) => {
+        if (blob) cb(blob, name)
+      }, 'image/png')
+    },
+    [exportName],
+  )
+
+  const downloadBlob = useCallback((blob: Blob, name: string) => {
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = name
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }, [])
+
+  const savePng = useCallback(() => withBlob(downloadBlob), [withBlob, downloadBlob])
+
+  // Post to Instagram. On mobile the Web Share API hands the PNG to the native
+  // share sheet (Instagram, Stories, etc.). Desktop browsers can't push an
+  // image into Instagram directly, so fall back to saving it and opening the
+  // composer with a prompt.
+  const shareImage = useCallback(() => {
+    withBlob(async (blob, name) => {
+      const file = new File([blob], name, { type: 'image/png' })
+      const nav = navigator as Navigator & {
+        canShare?: (data?: ShareData) => boolean
+        share?: (data?: ShareData) => Promise<void>
+      }
+      if (nav.canShare && nav.share && nav.canShare({ files: [file] })) {
+        try {
+          await nav.share({
+            files: [file],
+            title: 'Contour Press',
+            text: 'Printed with Contour Press',
+          })
+          flash('Shared. Pick Instagram from the share sheet.')
+        } catch {
+          // User dismissed the share sheet — nothing to do.
+        }
+      } else {
+        downloadBlob(blob, name)
+        window.open('https://www.instagram.com/', '_blank', 'noopener')
+        flash('Saved the PNG — drop it into a new Instagram post.')
+      }
+    })
+  }, [withBlob, downloadBlob, flash])
 
   const activePlate = PLATES[plate]
 
   return (
-    <div className="app">
+    <div className="app" ref={appRef}>
       <Grain />
       <header className="topbar">
         <div className="brand">
@@ -267,7 +371,9 @@ export default function App() {
             </div>
           </div>
           <div className="caption">
-            <span className="cap-num">{String(plate + 1).padStart(2, '0')}</span>
+            <span className="cap-num" ref={capNumRef}>
+              {String(plate + 1).padStart(2, '0')}
+            </span>
             <span className="cap-name">{activePlate.name}</span>
             <span className="cap-ink">ink · {inkName}</span>
           </div>
@@ -329,6 +435,7 @@ export default function App() {
               <div className="gen-head">
                 <button
                   type="button"
+                  ref={customSwatchRef}
                   aria-pressed={inkMode === 'custom'}
                   className={'swatch custom' + (inkMode === 'custom' ? ' active' : '')}
                   onClick={() => setInkMode('custom')}
@@ -392,11 +499,24 @@ export default function App() {
               <button type="button" className="btn" onClick={reroll}>
                 Reroll
               </button>
-              <button type="button" className="btn primary" onClick={savePng}>
+            </div>
+            <div className="actions">
+              <button type="button" className="btn" onClick={savePng}>
                 Save PNG
               </button>
+              <button type="button" className="btn primary ig" onClick={shareImage}>
+                <IgGlyph />
+                Post to Instagram
+              </button>
             </div>
-            <p className="howto">{activePlate.blurb} Sheets stack low→high; depth carves the grooves, edge lays the knife cut.</p>
+            <p className="howto" role="status" aria-live="polite">
+              {toast ?? (
+                <>
+                  {activePlate.blurb} Sheets stack low→high; depth carves the grooves, edge lays the knife
+                  cut.
+                </>
+              )}
+            </p>
           </fieldset>
         </aside>
       </main>
@@ -435,6 +555,16 @@ function Slider(props: {
         style={{ ['--pct' as string]: pct + '%' }}
       />
     </div>
+  )
+}
+
+function IgGlyph() {
+  return (
+    <svg className="ig-glyph" viewBox="0 0 24 24" width="14" height="14" aria-hidden focusable="false">
+      <rect x="2.5" y="2.5" width="19" height="19" rx="5.5" fill="none" stroke="currentColor" strokeWidth="2" />
+      <circle cx="12" cy="12" r="4.6" fill="none" stroke="currentColor" strokeWidth="2" />
+      <circle cx="17.6" cy="6.4" r="1.4" fill="currentColor" />
+    </svg>
   )
 }
 
